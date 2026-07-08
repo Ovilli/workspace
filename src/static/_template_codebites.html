@@ -39,6 +39,107 @@ pre table td {
     text-align: right;
 }
 
+#launch-progress {
+    max-width: 600px;
+    margin: 1em auto;
+}
+#launch-progress > div {
+    border: 1px solid #ddd;
+    border-radius: 0.75em;
+    padding: 1.25em;
+    box-shadow: 0 0.25em 0.75em rgba(0, 0, 0, 0.1);
+    background: #fff;
+}
+#launch-progress .progress {
+    height: 1.5em;
+    border-radius: 0.75em;
+    font-size: 0.85em;
+    background-color: #eee;
+}
+#launch-progress .progress-bar {
+    transition: width 0.4s ease;
+    line-height: 1.5em;
+    font-weight: 600;
+    min-width: 2.5em;
+    background-color: #428bd4;
+}
+.launch-progress-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.5em;
+}
+.launch-progress-header .message {
+    font-weight: 400;
+    font-size: 0.9em;
+}
+.launch-progress-header .time {
+    color: #888;
+    font-size: 0.8em;
+    font-family: 'IBM Plex Mono', monospace;
+}
+#launch-progress-steps {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-top: 0.8em;
+    gap: 0;
+    flex-wrap: wrap;
+}
+.launch-step {
+    display: flex;
+    align-items: center;
+    gap: 0.3em;
+    padding: 0.3em 0.5em;
+    border-radius: 0.5em;
+    font-size: 0.78em;
+    color: #888;
+    transition: all 0.3s ease;
+    white-space: nowrap;
+}
+.launch-step i {
+    font-size: 1em;
+    margin-right: 0.15em;
+}
+.launch-step.active {
+    color: #428bd4;
+    font-weight: 600;
+    background: rgba(66, 139, 212, 0.08);
+}
+.launch-step.done {
+    color: #73a946;
+}
+.launch-step.failed {
+    color: #e5185d;
+    background: rgba(229, 24, 93, 0.08);
+}
+.launch-step-connector {
+    width: 1.2em;
+    height: 2px;
+    background: #ddd;
+    margin: 0 0.1em;
+    flex-shrink: 0;
+}
+html[data-bs-theme="dark"] {
+    #launch-progress > div {
+        background: #181818;
+        border: 1px solid #333;
+        box-shadow: 0 0.25em 0.75em rgba(0, 0, 0, 0.5);
+    }
+    #launch-progress .progress {
+        background-color: #0a0a0a;
+    }
+    .launch-step.active {
+        color: #18abe5;
+        background: rgba(24, 171, 229, 0.12);
+    }
+    .launch-step.done {
+        color: #90be6d;
+    }
+    .launch-step-connector {
+        background: #333;
+    }
+}
 </style>
 
 <script>
@@ -86,33 +187,211 @@ function showTemplateModal(title, text, confirm_label, confirm_class,
 
 var server_tag = "#{(@session_user || {})[:server_tag]}";
 
-function check_server_online(server_tag, watch) {
-    if (typeof(watch) === 'undefined') watch = false;
-    let url = `#{WEB_ROOT}/w/${server_tag}/`;
-    console.log(url);
-    fetch(url, {credentials: 'include'})
-    .then(response => {
-        if (response.status === 200) {
-            console.log('Server is online');
-            $('#bu_launch .bi').removeClass('bi-spin');
-            $('#bu_launch').prop('disabled', false);
-            $('#bu_launch_share .bi').removeClass('bi-spin');
-            $('#bu_launch_share').prop('disabled', false);
-            $('.bu-launch-test .bi').removeClass('bi-spin');
-            $('.bu-launch-test').prop('disabled', false);
-            $('.bu-open-workspace-as-admin .bi').removeClass('bi-spin');
-            $('.bu-open-workspace-as-admin').prop('disabled', false);
-            let workspace_url = `#{WEB_ROOT}`.replace('//', `//${server_tag}.`);
-            console.log(`Now opening ${workspace_url}`);
-            window.open(workspace_url, '_blank');
+var launch_progress_steps = [
+    { pct: 0, label: 'Warteschlange', icon: 'bi-clock' },
+    { pct: 10, label: 'Vorbereitung', icon: 'bi-folder' },
+    { pct: 25, label: 'Konfiguration', icon: 'bi-gear' },
+    { pct: 45, label: 'Container starten', icon: 'bi-box' },
+    { pct: 70, label: 'Netzwerk', icon: 'bi-diagram-3' },
+    { pct: 90, label: 'Warten auf Workspace', icon: 'bi-hourglass' },
+    { pct: 100, label: 'Bereit!', icon: 'bi-check-circle' },
+];
+
+function get_step_for_progress(pct) {
+    let idx = 0;
+    for (let i = launch_progress_steps.length - 1; i >= 0; i--) {
+        if (pct >= launch_progress_steps[i].pct) { idx = i; break; }
+    }
+    return idx;
+}
+
+function update_launch_progress_ui(pct, message, status, error) {
+    let step_idx = get_step_for_progress(pct);
+    let elapsed = 0;
+    if (window._launch_start_time) {
+        elapsed = Math.floor((Date.now() - window._launch_start_time) / 1000);
+    }
+
+    if (pct > 0 && !window._progress_bar_shown) {
+        window._progress_bar_shown = true;
+        $('#launch-progress').slideDown(300);
+    }
+
+    let bar = $('#launch-progress-bar');
+    bar.css('width', Math.min(pct, 100) + '%');
+    bar.text(pct + '%');
+    bar.attr('aria-valuenow', pct);
+    bar.toggleClass('progress-bar-animated', status === 'queued' || status === 'running');
+    bar.toggleClass('progress-bar-striped', status === 'queued' || status === 'running');
+    bar.toggleClass('bg-success', status === 'ready');
+    bar.toggleClass('bg-danger', status === 'failed');
+
+    let msg = '';
+    if (status === 'failed') {
+        msg = error || 'Fehler beim Starten';
+    } else if (pct < 100) {
+        msg = message || 'Wird gestartet...';
+    } else {
+        msg = 'Workspace ist bereit!';
+    }
+    $('#launch-progress-message').text(msg);
+
+    let time_str = '';
+    if (elapsed > 0) {
+        if (elapsed < 60) {
+            time_str = elapsed + 's';
         } else {
-            console.log('Server is offline');
-            setTimeout(function() { check_server_online(server_tag, watch); }, 500);
+            time_str = Math.floor(elapsed / 60) + 'm ' + (elapsed % 60) + 's';
         }
-    })
-    .catch(error => {
-        console.log('Error:', error);
+    }
+    $('#launch-progress-time').text(time_str);
+
+    launch_progress_steps.forEach(function(step, i) {
+        let el = $('#launch-step-' + i);
+        if (el.length === 0) {
+            el = $('<div>').attr('id', 'launch-step-' + i).addClass('launch-step');
+            if (step.pct === 100) el.addClass('last');
+            el.append($('<i>').addClass('bi ' + step.icon));
+            el.append($('<span>').text(step.label));
+            $('#launch-progress-steps').append(el);
+            if (i < launch_progress_steps.length - 1) {
+                $('#launch-progress-steps').append($('<div>').addClass('launch-step-connector'));
+            }
+        }
+        let is_done = pct >= step.pct || status === 'ready';
+        let is_active = i === step_idx && status !== 'ready' && status !== 'failed';
+        el.toggleClass('done', is_done);
+        el.toggleClass('active', is_active);
+        el.toggleClass('failed', status === 'failed' && is_active);
     });
+}
+
+function reset_launch_progress() {
+    // close any placeholder popup that never got navigated (failure path)
+    if (window._launch_win && !window._launch_win.closed) window._launch_win.close();
+    window._launch_win = null;
+    window._progress_bar_shown = false;
+    window._launch_poll_timeout = null;
+    window._launch_start_time = null;
+    $('#launch-progress').slideUp(300);
+    $('#launch-progress-steps').empty();
+    $('#launch-progress-bar').css('width', '0%').text('0%').removeClass('bg-success bg-danger progress-bar-animated progress-bar-striped');
+    $('#launch-progress-message').text('');
+    $('#launch-progress-time').text('');
+    $('#bu_launch').prop('disabled', false);
+    $('#bu_launch .bi').removeClass('bi-spin');
+    $('#bu_launch_share').prop('disabled', false);
+    $('#bu_launch_share .bi').removeClass('bi-spin');
+    $('.bu-launch-test').prop('disabled', false);
+    $('.bu-launch-test .bi').removeClass('bi-spin');
+    $('.bu-open-workspace-as-admin').prop('disabled', false);
+    $('.bu-open-workspace-as-admin .bi').removeClass('bi-spin');
+}
+
+function poll_server_start_progress(server_tag, params, watch) {
+    if (typeof(watch) === 'undefined') watch = false;
+
+    let max_attempts = 120;
+    let attempt = 0;
+
+    function tick() {
+        attempt++;
+        if (attempt > max_attempts) {
+            update_launch_progress_ui(0, 'Zeitüberschreitung', 'failed', 'Der Startvorgang dauert zu lange. Bitte versuche es erneut.');
+            reset_launch_progress();
+            return;
+        }
+
+        api_call('/api/server_start_status', params || {}, function(data) {
+            let pct = data.progress || 0;
+            let msg = data.progress_message || '';
+            let st = data.status || 'unknown';
+            let err = data.error || null;
+
+            update_launch_progress_ui(pct, msg, st, err);
+
+            if (st === 'ready') {
+                poll_workspace_online(server_tag, watch);
+            } else if (st === 'failed') {
+                update_launch_progress_ui(0, err || 'Fehler beim Starten', 'failed');
+                reset_launch_progress();
+            } else {
+                window._launch_poll_timeout = setTimeout(tick, 800);
+            }
+        }, function(err) {
+            if (attempt < max_attempts) {
+                window._launch_poll_timeout = setTimeout(tick, 1000);
+            } else {
+                update_launch_progress_ui(0, 'Verbindungsfehler', 'failed');
+                reset_launch_progress();
+            }
+        });
+    }
+
+    tick();
+}
+
+// Open a placeholder tab synchronously inside a click handler so the browser
+// keeps the popup permission (user activation). The tab is navigated to the
+// real workspace URL later, once the container is confirmed online.
+function open_launch_window() {
+    try {
+        window._launch_win = window.open('about:blank', '_blank');
+        if (window._launch_win) {
+            window._launch_win.document.write(
+                '<!doctype html><meta charset="utf-8"><title>Workspace startet…</title>' +
+                '<body style="font-family:sans-serif;display:flex;align-items:center;' +
+                'justify-content:center;height:100vh;margin:0;color:#555">' +
+                'Workspace startet…</body>');
+        }
+    } catch (e) { window._launch_win = null; }
+}
+
+function poll_workspace_online(server_tag, watch) {
+    let url = `#{WEB_ROOT}/w/${server_tag}/`;
+    let max_attempts = 40;
+
+    function tick(attempt) {
+        fetch(url, {credentials: 'include'})
+        .then(response => {
+            if (response.status === 200) {
+                update_launch_progress_ui(100, 'Workspace ist bereit!', 'ready');
+                $('#launch-progress-bar').addClass('bg-success');
+                setTimeout(function() {
+                    let workspace_url = `#{WEB_ROOT}`.replace('//', `//${server_tag}.`);
+                    if (window._launch_win && !window._launch_win.closed) {
+                        window._launch_win.location = workspace_url; // reuse gesture-born tab
+                    } else {
+                        window.open(workspace_url, '_blank'); // fallback (may be blocked)
+                    }
+                    window._launch_win = null;
+                    reset_launch_progress();
+                }, 500);
+            } else {
+                if (attempt < max_attempts) {
+                    setTimeout(function() { tick(attempt + 1); }, 500);
+                } else {
+                    update_launch_progress_ui(95, 'Workspace reagiert nicht', 'failed', 'Der Container läuft, aber der Workspace antwortet nicht.');
+                    reset_launch_progress();
+                }
+            }
+        })
+        .catch(error => {
+            if (attempt < max_attempts) {
+                setTimeout(function() { tick(attempt + 1); }, 500);
+            } else {
+                update_launch_progress_ui(95, 'Verbindungsfehler', 'failed', 'Konnte keine Verbindung zum Workspace herstellen.');
+                reset_launch_progress();
+            }
+        });
+    }
+
+    tick(0);
+}
+
+// backward compatibility for share.html and admin.html
+function check_server_online(server_tag, watch) {
+    poll_workspace_online(server_tag, watch);
 }
 
 function check_server_tag_update(server_tag) {
@@ -249,23 +528,43 @@ window.addEventListener('load', function() {
     }
 
     $('#bu_launch').on('click', function(e) {
+        reset_launch_progress();
+        open_launch_window();
         $('#bu_launch').prop('disabled', true);
         $('#bu_launch .bi').addClass('bi-spin');
+        window._launch_start_time = Date.now();
         api_call('/api/start_server', {}, function(data) {
             console.log(data);
             check_server_tag_update(data.server_tag);
-            check_server_online(data.server_tag);
+            if (data.status === 'ready') {
+                poll_workspace_online(data.server_tag);
+            } else {
+                poll_server_start_progress(data.server_tag, {});
+            }
+        }, function(err) {
+            update_launch_progress_ui(0, 'Verbindungsfehler', 'failed', 'Der Server antwortet nicht. Bitte versuche es erneut.');
+            reset_launch_progress();
         });
     });
     $('.bu-launch-test').on('click', function(e) {
         let button = $(e.target).closest('button');
         let test_tag = button.data('tag');
+        reset_launch_progress();
+        open_launch_window();
         button.prop('disabled', true);
         button.find('.bi').addClass('bi-spin');
+        window._launch_start_time = Date.now();
         api_call('/api/start_server', {test_tag: test_tag}, function(data) {
             console.log(data);
             check_server_tag_update(data.server_tag);
-            check_server_online(data.server_tag);
+            if (data.status === 'ready') {
+                poll_workspace_online(data.server_tag);
+            } else {
+                poll_server_start_progress(data.server_tag, {test_tag: test_tag});
+            }
+        }, function(err) {
+            update_launch_progress_ui(0, 'Verbindungsfehler', 'failed', 'Der Server antwortet nicht. Bitte versuche es erneut.');
+            reset_launch_progress();
         });
     });
     $('#bu_reset').on('click', function(e) {
@@ -405,6 +704,20 @@ window.addEventListener('load', function() {
                 <!-- <div class="modal-footer">
                 </div> -->
             </div>
+        </div>
+    </div>
+
+    <div id="launch-progress" class="container" style="display: none;">
+        <div>
+            <div class="launch-progress-header">
+                <span class="message" id="launch-progress-message">Wird gestartet...</span>
+                <span class="time" id="launch-progress-time"></span>
+            </div>
+            <div class="progress" role="progressbar">
+                <div id="launch-progress-bar" class="progress-bar progress-bar-striped progress-bar-animated"
+                     style="width: 0%">0%</div>
+            </div>
+            <div id="launch-progress-steps"></div>
         </div>
     </div>
 

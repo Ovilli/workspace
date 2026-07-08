@@ -308,11 +308,20 @@
             let button = $(e.target).closest('button');
             let email = button.data('email');
             console.log(`Opening workspace for ${email}`);
+            open_launch_window();
             button.prop('disabled', true);
             button.find('.bi').addClass('bi-spin');
+            window._launch_start_time = Date.now();
             api_call('/api/start_server_as_admin', { email: email }, function (data) {
                 check_server_tag_update(data.watch_tag);
-                check_server_online(data.watch_tag, true);
+                if (data.status === 'ready') {
+                    poll_workspace_online(data.watch_tag);
+                } else {
+                    poll_server_start_progress(data.watch_tag, {email: email}, true);
+                }
+            }, function(err) {
+                update_launch_progress_ui(0, 'Verbindungsfehler', 'failed', 'Der Server antwortet nicht.');
+                reset_launch_progress();
             });
         });
         $('.bu-impersonate').on('click', function (e) {

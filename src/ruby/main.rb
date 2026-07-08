@@ -389,6 +389,16 @@ class Main < Sinatra::Base
         end
     end
 
+    def self.update_server_start_progress(key, pct, message)
+        ensure_server_start_queue!
+        @@server_start_mutex.synchronize do
+            job = @@server_start_jobs[key]
+            return unless job
+            job[:progress] = pct
+            job[:progress_message] = message
+        end
+    end
+
     def self.server_start_snapshot(job)
         return { :status => 'unknown' } unless job
 
@@ -402,6 +412,8 @@ class Main < Sinatra::Base
             :started_at => job[:started_at]&.to_i,
             :finished_at => job[:finished_at]&.to_i,
             :error => job[:error],
+            :progress => job[:progress] || 0,
+            :progress_message => job[:progress_message] || '',
         }
     end
 
@@ -438,6 +450,8 @@ class Main < Sinatra::Base
                 :started_at => nil,
                 :finished_at => nil,
                 :error => nil,
+                :progress => 0,
+                :progress_message => 'Wartet in der Warteschlange...',
                 :refresh_nginx_after => refresh_nginx_after,
                 :runner => block,
             }
@@ -1911,9 +1925,11 @@ class Main < Sinatra::Base
     def start_server(email, test_tag = nil, server_tag: nil)
         email_with_test_tag = "#{email}#{test_tag}"
         container_name = fs_tag_for_email(email_with_test_tag)
+        progress_key = Main.server_start_key(email, test_tag)
 
         STDERR.puts ">>> Starting server with email #{email_with_test_tag} and container name #{container_name}"
 
+        Main.update_server_start_progress(progress_key, 5, 'Lege Benutzerverzeichnisse an...')
         system("mkdir -p /user/#{container_name}/config")
         system("mkdir -p /user/#{container_name}/workspace")
         if File.exist?("/user/#{container_name}/workspace/.bashrc")
@@ -2118,6 +2134,8 @@ class Main < Sinatra::Base
             end
         end
 
+        Main.update_server_start_progress(progress_key, 15, 'Konfiguriere Benutzereinstellungen...')
+
         STDERR.puts ">>> Getting server state"
         state = with_timing("start_server #{container_name}: docker inspect") do
             get_server_state(container_name)
@@ -2172,6 +2190,7 @@ class Main < Sinatra::Base
             #       "folder": "/workspace"
             #     }
             #   }
+            Main.update_server_start_progress(progress_key, 30, 'Setze Berechtigungen...')
             with_timing("start_server #{container_name}: chown -R") do
                 shell_ok("chown -R 1000:1000 /user/#{container_name}", :timeout => shell_timeout(:chown))
             end
@@ -2212,6 +2231,7 @@ class Main < Sinatra::Base
             end
 
             network_name = "workspace_user"
+            Main.update_server_start_progress(progress_key, 45, 'Starte Workspace-Container...')
             STDERR.puts ">>> Getting IP addresses for mysql and postgres..."
             login = email.split('@').first.downcase
             mysql_login = db_email.split('@').first.downcase
@@ -2221,9 +2241,11 @@ class Main < Sinatra::Base
             with_timing("start_server #{container_name}: docker run") do
                 shell_ok(command, :timeout => shell_timeout(:docker_run))
             end
+            Main.update_server_start_progress(progress_key, 70, 'Konfiguriere Netzwerk...')
             with_timing("start_server #{container_name}: refresh nginx") do
                 Main.refresh_nginx_config()
             end
+            Main.update_server_start_progress(progress_key, 90, 'Warte auf Workspace...')
         end
         return "#{server_tag}#{test_tag}" if server_tag
 
@@ -2318,14 +2340,17 @@ class Main < Sinatra::Base
             start_server(email, test_tag, :server_tag => base_server_tag)
         end
 
-        status = Main.wait_for_server_start_job(job)
+        status = Main.server_start_snapshot(job)
 
         respond(
             :yay => 'sure',
             :server_tag => server_tag,
+            :key => status[:key],
             :queued => ['queued', 'running'].include?(status[:status]),
             :status => status[:status],
-            :error => status[:error]
+            :error => status[:error],
+            :progress => status[:progress] || 0,
+            :progress_message => status[:progress_message] || ''
         )
     end
 
@@ -2346,14 +2371,17 @@ class Main < Sinatra::Base
             start_server(user[:email], nil, :server_tag => user[:server_tag])
         end
 
-        status = Main.wait_for_server_start_job(job)
+        status = Main.server_start_snapshot(job)
 
         respond(
             :yay => 'sure',
             :share_tag => user[:share_tag],
+            :key => status[:key],
             :queued => ['queued', 'running'].include?(status[:status]),
             :status => status[:status],
-            :error => status[:error]
+            :error => status[:error],
+            :progress => status[:progress] || 0,
+            :progress_message => status[:progress_message] || ''
         )
     end
 
@@ -2387,7 +2415,7 @@ class Main < Sinatra::Base
             start_server(email, nil, :server_tag => target_user[:server_tag])
         end
 
-        status = Main.wait_for_server_start_job(job)
+        status = Main.server_start_snapshot(job)
 
         expires = Time.new + 3600 * 24 * 365
         response.set_cookie('hs_watch_tag',
@@ -2400,9 +2428,12 @@ class Main < Sinatra::Base
         respond(
             :yay => 'sure',
             :watch_tag => watch_tag,
+            :key => status[:key],
             :queued => ['queued', 'running'].include?(status[:status]),
             :status => status[:status],
-            :error => status[:error]
+            :error => status[:error],
+            :progress => status[:progress] || 0,
+            :progress_message => status[:progress_message] || ''
         )
     end
 

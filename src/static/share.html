@@ -9,17 +9,40 @@
     </div>
 </div>
 
+<div id="launch-progress" class="container" style="display: none;">
+    <div>
+        <div class="launch-progress-header">
+            <span class="message" id="launch-progress-message">Wird gestartet...</span>
+            <span class="time" id="launch-progress-time"></span>
+        </div>
+        <div class="progress" role="progressbar">
+            <div id="launch-progress-bar" class="progress-bar progress-bar-striped progress-bar-animated"
+                 style="width: 0%">0%</div>
+        </div>
+        <div id="launch-progress-steps"></div>
+    </div>
+</div>
+
 <script>
 var share_tag = '#{share_tag}';
 window.addEventListener('load', function() {
     $('#bu_launch_share').on('click', function(e) {
+        open_launch_window();
         $('#bu_launch_share').prop('disabled', true);
         $('#bu_launch_share .bi').addClass('bi-spin');
+        window._launch_start_time = Date.now();
         console.log(share_tag);
         api_call('/api/start_server_with_share_tag', {share_tag: share_tag}, function(data) {
             if (data.success) {
-                check_server_online(data.share_tag);
+                if (data.status === 'ready') {
+                    poll_workspace_online(data.share_tag);
+                } else {
+                    poll_server_start_progress(data.share_tag, {});
+                }
             }
+        }, function(err) {
+            update_launch_progress_ui(0, 'Verbindungsfehler', 'failed', 'Der Server antwortet nicht.');
+            reset_launch_progress();
         });
     });
 });
